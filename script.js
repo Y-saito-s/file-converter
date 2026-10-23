@@ -33,6 +33,10 @@ let dragSourceId = null;
   const isImage = (entry) => imageExts.has(extOf(entry.file.name)) || entry.file.type.startsWith("image/");
   const safeBase = (name) => name.replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|]/g, "_").slice(0, 100) || "converted";
   const formatSize = (n) => n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 ** 2).toFixed(1)} MB`;
+  let ffmpegInstance = null;
+  let ffmpegLoading = null;
+  let audioFiles = [];
+  let videoFiles = [];
 
   function setStatus(message = "", error = false) {
     status.textContent = message;
@@ -203,7 +207,7 @@ li.addEventListener("drop", (event) => {
 
   function updateOperationHelp() {
     const messages = {
-      "images-combined": "選択した画像を、並び順どおりに1つのPDFにまとめます。",
+      "images-combined": "選択した画像とPDFを、一覧の順番どおりに1つのPDFにまとめます。",
       "images-individual": "画像ごとにPDFを作成し、複数ファイルはZIPにまとめてダウンロードします。",
       "pdf-merge": "追加したPDFを一覧の順番で1つに結合します。",
       "pdf-split": "各PDFを1ページずつのPDFに分割し、ZIPにまとめます。",
@@ -383,7 +387,7 @@ function getOutputFilename(extension) {
 
   let name = input.value.trim()
     .replace(/[\\/:*?"<>|]/g, "_")
-    .replace(/\.(pdf|zip)$/i, "");
+    .replace(/\.(pdf|zip|wav|mp3|m4a|mp4|mov|webm)$/i, "");
 
   if (!name) name = "converted";
 
@@ -407,7 +411,7 @@ function getOutputFilename(extension) {
 
   const bytes = await createMixedPdf(compatible);
 
-  setOutput(
+  await setFinalOutput(
     new Blob([bytes], { type: "application/pdf" }),
     getOutputFilename("pdf"),
     false,
@@ -420,23 +424,23 @@ function getOutputFilename(extension) {
           setStatus(`PDFを作成中… ${i + 1}/${imgs.length}`);
           outputs.push({ name: `${safeBase(imgs[i].file.name)}.pdf`, bytes: await imageToPdfBytes(imgs[i]) });
         }
-        if (outputs.length === 1) setOutput(new Blob([outputs[0].bytes], { type: "application/pdf" }), outputs[0].name, false, "PDFを作成しました。");
-        else setOutput(await makeZip(outputs), getOutputFilename("zip"), true, `${outputs.length}個のPDFをZIPにまとめました。`);
+        if (outputs.length === 1) await setFinalOutput(new Blob([outputs[0].bytes], { type: "application/pdf" }), getOutputFilename("pdf"), false, "PDFを作成しました。");
+        else await setFinalOutput(await makeZip(outputs), getOutputFilename("zip"), true, `${outputs.length}個のPDFをZIPにまとめました。`);
       } else if (op === "pdf-merge") {
         const pdfs = requireEntries(isPdf, "PDF");
         if (pdfs.length < 2) throw new Error("結合にはPDFが2つ以上必要です。");
         const bytes = await mergePdfs(pdfs);
-        setOutput(new Blob([bytes], { type: "application/pdf" }), getOutputFilename("pdf"), false, `${pdfs.length}個のPDFを結合しました。`);
+        await setFinalOutput(new Blob([bytes], { type: "application/pdf" }), getOutputFilename("pdf"), false, `${pdfs.length}個のPDFを結合しました。`);
       } else if (op === "pdf-split") {
         const pdfs = requireEntries(isPdf, "PDF");
         const outputs = await splitPdfs(pdfs);
         if (!outputs.length) throw new Error("分割できるページがありません。");
-        setOutput(await makeZip(outputs), getOutputFilename("zip"), true, `${outputs.length}ページ分のPDFを作成しました。`);
+        await setFinalOutput(await makeZip(outputs), getOutputFilename("zip"), true, `${outputs.length}ページ分のPDFを作成しました。`);
       } else if (op === "pdf-jpg") {
         const pdfs = requireEntries(isPdf, "PDF");
         const outputs = await pdfsToJpg(pdfs);
         if (!outputs.length) throw new Error("変換できるページがありません。");
-        setOutput(await makeZip(outputs), getOutputFilename("zip"), true, `${outputs.length}枚のJPG画像を作成しました。`);
+        await setFinalOutput(await makeZip(outputs), getOutputFilename("zip"), true, `${outputs.length}枚のJPG画像を作成しました。`);
       }
     } catch (err) {
       console.error(err);
@@ -444,6 +448,20 @@ function getOutputFilename(extension) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function setFinalOutput(blob, name, alreadyZip, description) {
+    const wantsZip = $("zipOutput").checked;
+    if (wantsZip && !alreadyZip) {
+      if (!window.JSZip) throw new Error("ZIPライブラリを読み込めませんでした。インターネット接続を確認してください。");
+      const zip = new JSZip();
+      zip.file(name, blob);
+      blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 5 } });
+      name = getOutputFilename("zip");
+      alreadyZip = true;
+      description += " ZIP形式で出力しました。";
+    }
+    setOutput(blob, name, alreadyZip, description);
   }
 
   function setOutput(blob, name, zip, description) {
@@ -503,6 +521,117 @@ function getOutputFilename(extension) {
   operation.addEventListener("change", () => { invalidateResult(); updateOperationHelp(); });
   convertButton.addEventListener("click", performConversion);
   downloadButton.addEventListener("click", downloadOutput);
+
+  // タブ切り替え
+  const tabButtons = Array.from(document.querySelectorAll("[data-tab]"));
+  tabButtons.forEach((button) => button.addEventListener("click", () => {
+    const selected = button.dataset.tab;
+    tabButtons.forEach((tab) => {
+      const active = tab === button;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+    });
+    document.querySelectorAll("[data-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.panel !== selected;
+    });
+    invalidateResult();
+    setStatus("");
+  }));
+
+  async function getFFmpeg() {
+    if (!window.FFmpeg || !window.FFmpeg.createFFmpeg) {
+      throw new Error("音声変換ライブラリを読み込めませんでした。ページを再読み込みしてください。");
+    }
+    if (ffmpegInstance && ffmpegInstance.isLoaded()) return ffmpegInstance;
+    if (ffmpegLoading) return ffmpegLoading;
+    ffmpegLoading = (async () => {
+      setStatus("音声変換エンジンを読み込み中です。初回は時間がかかります…");
+      const instance = window.FFmpeg.createFFmpeg({
+        log: false,
+        mainName: "main",
+        corePath: "https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js",
+        progress: ({ ratio }) => {
+          if (Number.isFinite(ratio)) setStatus(`変換中… ${Math.max(0, Math.min(100, Math.round(ratio * 100)))}%`);
+        }
+      });
+      await instance.load();
+      ffmpegInstance = instance;
+      return instance;
+    })();
+    try { return await ffmpegLoading; }
+    finally { ffmpegLoading = null; }
+  }
+
+  function safeVirtualName(name, fallback) {
+    return safeBase(name).replace(/[^a-zA-Z0-9_\--￿]/g, "_") || fallback;
+  }
+
+  async function convertMediaFiles(files, mode) {
+    if (!files.length) throw new Error("先にファイルを選択してください。");
+    const ffmpeg = await getFFmpeg();
+    const outputs = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const inputExt = extOf(file.name) || (mode === "audio-wav" ? "mp3" : "mp4");
+      const inputName = `input_${i}.${inputExt}`;
+      const outputExt = mode === "audio-wav" ? "wav" : "mp3";
+      const outputVirtual = `output_${i}.${outputExt}`;
+      setStatus(`変換中… ${i + 1}/${files.length}：${file.name}`);
+      ffmpeg.FS("writeFile", inputName, await window.FFmpeg.fetchFile(file));
+      const args = mode === "audio-wav"
+        ? ["-i", inputName, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", outputVirtual]
+        : ["-i", inputName, "-vn", "-codec:a", "libmp3lame", "-q:a", "2", outputVirtual];
+      await ffmpeg.run(...args);
+      const data = ffmpeg.FS("readFile", outputVirtual);
+      outputs.push({
+        name: `${safeBase(file.name)}.${outputExt}`,
+        bytes: new Uint8Array(data)
+      });
+      try { ffmpeg.FS("unlink", inputName); } catch (_) {}
+      try { ffmpeg.FS("unlink", outputVirtual); } catch (_) {}
+    }
+    const mime = mode === "audio-wav" ? "audio/wav" : "audio/mpeg";
+    if (outputs.length === 1) {
+      const name = getOutputFilename(mode === "audio-wav" ? "wav" : "mp3");
+      await setFinalOutput(new Blob([outputs[0].bytes], { type: mime }), name, false, "変換が完了しました。");
+    } else {
+      await setFinalOutput(await makeZip(outputs), getOutputFilename("zip"), true, `${outputs.length}個のファイルを変換しました。`);
+    }
+  }
+
+  $("audioInput").addEventListener("change", () => {
+    audioFiles = Array.from($("audioInput").files || []);
+    $("audioFileSummary").textContent = audioFiles.length ? audioFiles.map((f) => f.name).join("、") : "ファイルが選択されていません。";
+    $("audioConvertButton").disabled = audioFiles.length === 0;
+    invalidateResult();
+  });
+  $("videoInput").addEventListener("change", () => {
+    videoFiles = Array.from($("videoInput").files || []);
+    $("videoFileSummary").textContent = videoFiles.length ? videoFiles.map((f) => f.name).join("、") : "ファイルが選択されていません。";
+    $("videoConvertButton").disabled = videoFiles.length === 0;
+    invalidateResult();
+  });
+  async function runMediaConversion(button, files, mode) {
+    button.disabled = true;
+    $("chooseFiles").disabled = true;
+    $("convertButton").disabled = true;
+    $("audioConvertButton").disabled = true;
+    $("videoConvertButton").disabled = true;
+    invalidateResult();
+    try { await convertMediaFiles(files, mode); }
+    catch (err) {
+      console.error(err);
+      setStatus(err && err.message ? err.message : "変換中にエラーが発生しました。", true);
+    } finally {
+      button.disabled = files.length === 0;
+      $("chooseFiles").disabled = false;
+      $("convertButton").disabled = entries.length === 0;
+      $("audioConvertButton").disabled = audioFiles.length === 0;
+      $("videoConvertButton").disabled = videoFiles.length === 0;
+    }
+  }
+  $("audioConvertButton").addEventListener("click", () => runMediaConversion($("audioConvertButton"), audioFiles, "audio-wav"));
+  $("videoConvertButton").addEventListener("click", () => runMediaConversion($("videoConvertButton"), videoFiles, "video-mp3"));
 
   updateUI();
 })();

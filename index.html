@@ -3,12 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="画像とPDFをブラウザ内で変換する無料ツール">
-  <title>File Converter — 画像・PDF変換</title>
+  <meta name="description" content="画像・PDF・音声・動画をブラウザ内で変換する無料ツール">
+  <title>File Converter — ファイル変換</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script defer src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
   <script defer src="script.js"></script>
 </head>
 <body>
@@ -24,10 +26,24 @@
     <section class="intro">
       <p class="eyebrow">SIMPLE FILE TOOLS</p>
       <h1>ファイル変換を、<br class="mobile-break">ひとつの場所で。</h1>
-      <p class="lead">画像もPDFも、まとめて追加して必要な形に変換できます。</p>
+      <p class="lead">画像・PDF・音声・動画を、ブラウザ内で変換できます。</p>
     </section>
 
+    <nav class="converter-tabs" role="tablist" aria-label="変換カテゴリ">
+      <button class="converter-tab active" type="button" role="tab" aria-selected="true" data-tab="documents"><span aria-hidden="true">▧</span> 画像・PDF</button>
+      <button class="converter-tab" type="button" role="tab" aria-selected="false" data-tab="audio"><span aria-hidden="true">♫</span> 音声変換</button>
+      <button class="converter-tab" type="button" role="tab" aria-selected="false" data-tab="video"><span aria-hidden="true">▷</span> 動画→音声</button>
+    </nav>
+
     <section class="workspace">
+      <div class="shared-output-options">
+        <div class="output-name-field">
+          <label class="field-label" for="outputName">出力ファイル名</label>
+          <input id="outputName" type="text" value="converted" maxlength="100" placeholder="converted">
+        </div>
+        <label class="checkbox-option"><input id="zipOutput" type="checkbox"><span class="checkbox-copy"><strong>ZIP形式で出力する</strong><small>チェックすると、単一ファイルの変換結果もZIPにまとめます。複数ファイルの出力はZIPになります。</small></span></label>
+      </div>
+      <div data-panel="documents" role="tabpanel" id="documentPanel">
       <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="ファイルを選択またはドラッグ＆ドロップ">
         <div class="upload-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
@@ -68,25 +84,13 @@
         </div>
         <label class="field-label" for="operation">処理内容</label>
         <select id="operation" class="wide-select">
-          <option value="images-combined"> 画像・PDFを1つのPDFにまとめる</option>
+          <option value="images-combined">画像・PDFを1つのPDFにまとめる</option>
           <option value="images-individual">画像を1枚ずつPDFに変換</option>
           <option value="pdf-merge">複数のPDFを1つに結合</option>
           <option value="pdf-split">PDFをページごとに分割</option>
           <option value="pdf-jpg">PDFをJPG画像に変換</option>
         </select>
         <p id="operationHelp" class="help-text">画像の順番が、そのままPDFのページ順になります。</p>
-<label class="field-label" for="outputName">
-  出力ファイル名
-</label>
-
-<input
-  id="outputName"
-  type="text"
-  value="converted.pdf"
-  maxlength="160"
-  autocomplete="off"
-  spellcheck="false"
->
         <div class="settings-note">
           <span class="note-icon">i</span>
           <p>処理はこのブラウザ内で行います。ファイルが当サービスのサーバーにアップロードされることはありません。</p>
@@ -99,6 +103,24 @@
           <span class="spinner" hidden></span>
         </button>
       </div>
+      </div>
+
+      <section class="media-panel" data-panel="audio" role="tabpanel" hidden>
+        <div class="media-heading"><span class="media-icon">♫</span><div><h2>MP3・M4A → WAV</h2><p>音声ファイルをWAV形式に変換します。</p></div></div>
+        <label class="media-drop" for="audioInput"><span class="upload-icon" aria-hidden="true">↑</span><strong>音声ファイルを選択</strong><span>MP3 / M4A を複数選択できます</span><input id="audioInput" type="file" multiple accept=".mp3,.m4a,audio/mpeg,audio/mp4,audio/x-m4a"></label>
+        <p id="audioFileSummary" class="media-file-summary">ファイルが選択されていません。</p>
+        <button id="audioConvertButton" class="button primary large" type="button" disabled>WAVに変換</button>
+        <p class="help-text">初回は変換エンジンの読み込みに時間がかかります。大きなファイルは処理に時間がかかる場合があります。</p>
+      </section>
+
+      <section class="media-panel" data-panel="video" role="tabpanel" hidden>
+        <div class="media-heading"><span class="media-icon">▷</span><div><h2>動画 → MP3</h2><p>動画から音声を抽出し、MP3として保存します。</p></div></div>
+        <label class="media-drop" for="videoInput"><span class="upload-icon" aria-hidden="true">↑</span><strong>動画ファイルを選択</strong><span>MP4 / MOV / WebM など</span><input id="videoInput" type="file" multiple accept="video/*,.mp4,.mov,.mkv,.webm,.avi,.m4v"></label>
+        <p id="videoFileSummary" class="media-file-summary">ファイルが選択されていません。</p>
+        <button id="videoConvertButton" class="button primary large" type="button" disabled>音声を抽出</button>
+        <p class="help-text">映像は保存せず、音声だけをMP3に変換します。対応形式は動画のコーデックにも左右されます。</p>
+      </section>
+
       <div id="status" class="status" role="status" aria-live="polite"></div>
       <div id="resultSection" class="result-section" hidden>
         <div class="result-icon" aria-hidden="true">✓</div>
